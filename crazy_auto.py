@@ -22,7 +22,9 @@ import cflib.crtp
 
 from mpc import mpc
 # from lqr import lqr
-
+import CBF.CBF as cbf
+from CBF.GP import GP
+from CBF.learner import controller_init
 
 @contextlib.contextmanager
 def raw_mode(file):
@@ -126,6 +128,9 @@ class Crazy_Auto:
             os.makedirs(save_dir + '/training_data')
         step_count = 0
         eInt_vert = 0
+
+        # init controller
+        controller_init(self)
         while True:
 
             timeStart = time.time()
@@ -156,11 +161,14 @@ class Crazy_Auto:
             # Compute control signal - map errors to control signals
             if self.isEnabled:
                 # mpc
-                mpc_policy = mpc(state, target, horizon)
-                roll_r, pitch_r, thrust_r = mpc_policy.solve()
+                #mpc_policy = mpc(state, target, horizon)
+                #roll_r, pitch_r, thrust_r = mpc_policy.solve()
+                u_bar_, v_t_pos = cbf.control_barrier(self, np.squeeze(state), action_RL, f, g, x, std, j,None)
+                [thrust_r, roll_r, pitch_r] = u_bar_
+                
                 roll_r = self.saturate(roll_r / self.pi * 180, self.roll_limit)
                 pitch_r = self.saturate(pitch_r / self.pi * 180, self.pitch_limit)
-                thrust_r = self.saturate((thrust_r + self.m * self.g) * self.thrust2input,
+                thrust_r = self.saturate((thrust_r) * self.thrust2input,
                                          self.thrust_limit)  # minus, see notebook
 
 
