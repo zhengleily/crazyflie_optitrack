@@ -1,11 +1,11 @@
 import numpy as np
 from .GP import GP
 from .CBF import build_barrier
-from barrier_comp import BARRIER
+#from barrier_comp import BARRIER
 
 def controller_init(self):
-    self.action_bound_up = np.array([0.55,30,30])
-    self.action_bound_low = np.array([0,-30,-30])
+    self.action_bound_up = np.array([0.55,0.40,0.40])
+    self.action_bound_low = np.array([0.35,-0.40,-0.40])
 
     # Set up observation space and action space
     self.observation_space = self.num_state

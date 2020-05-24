@@ -25,11 +25,11 @@ class GP():
     def update_GP_dynamics(self, path):
         N = self.observation_space
         X = path['Observation']
-        U = path['Action'].reshape(-1,4)
+        U = path['Action'].reshape(-1,3)
         L = X.shape[0]
         err = np.zeros((L - 1, N))
         for i in range(L - 1):
-            [f, g, x1] = self.env.predict_f_g(X[i, :])
+            [f, g, x1] = self.predict_f_g(X[i, :])
             f = np.ravel(f)
             g = np.ravel(g)
             x1 = np.ravel(x1)
@@ -48,8 +48,8 @@ class GP():
         t2 = time.time() - t1
         print('The GP update time:',t2)
     def get_GP_dynamics(self, obs, u_rl):
-        s = obs.reshape(-1,9)
-        [f_nom, g, x] = self.env.predict_f_g(obs)
+        s = obs.reshape(-1,6)
+        [f_nom, g, x] = self.predict_f_g(obs)
         f_nom = np.ravel(f_nom)
         g = np.ravel(g)
         x = np.ravel(x)[:6]
@@ -81,13 +81,12 @@ class GP():
                                                                        np.squeeze(std0),
                                                                        np.squeeze(std0),
                                                                        np.squeeze(std0),
-                                                                       np.squeeze(std0),
-                                                                       0, 0, 0])]
+                                                                       np.squeeze(std0),])]
 
     def get_GP_dynamics_prev(self, obs, u_rl):
         pass
     def get_GP_prediction(self, obs):
-        x = obs[:6]
+        x = obs[:6] 
         [m0,m1,m2,m3,m4,m5] = self.GP_model[0].predict(x.reshape(1, -1), return_std=False)[0]
         #m1 = self.GP_model[1].predict(x.reshape(1, -1), return_std=False)[0]
         #m2 = self.GP_model[2].predict(x.reshape(1, -1), return_std=False)[0]

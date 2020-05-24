@@ -104,7 +104,7 @@ class logs:
         self.velocity[2] = msg['velocity'][2]
         # print("position: ", self.position)
         # print("velocity: ", self.velocity)
-        print("deltatime", deltatime)
+        # print("deltatime", deltatime)
 
     # for debug
     def log_file_print(self, file, data):

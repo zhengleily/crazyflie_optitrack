@@ -11,7 +11,7 @@ import math
 def build_barrier(self):
     N = self.action_space
     self.P_angle = matrix(np.diag([1, 1., 1., 1e10]), tc='d')
-    self.P_pos = matrix(np.diag([1., 1., 1., 1e20, 1e18]), tc='d')
+    self.P_pos = matrix(np.diag([1., 1., 1., 1e20, 1e19]), tc='d')
     self.q_angle = matrix(np.zeros(N + 1))
     self.q_pos = matrix(np.zeros(N + 2))
 
@@ -30,7 +30,7 @@ def cal_angle(self, state, state_dsr,gp_prediction):
     vel_angle = np.array([phi, theta, psi])
     return pos_angle, vel_angle
 
-def direction(self, state, state_dsr, gp_prediction)
+def direction(self, state, state_dsr, gp_prediction):
     dt = 1.0/self.rate
     g = self.g
     m = self.m
@@ -41,8 +41,8 @@ def direction(self, state, state_dsr, gp_prediction)
     return pos_direction, vel_direction
 
 # Get compensatory action based on satisfaction of barrier function
-def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
-    step_time = t
+def control_barrier(self, obs, f, g, x, std, target,is_pid=False):
+    #step_time = t
     dt = 1.0/self.rate
     ''' Recorded curve '''
     # curve = self.env.curve
@@ -51,9 +51,12 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
     # third_pt = curve[t+2,:]
     ''' Parametric curve '''
 
-    cur_pt = np.concatenate([self.curve_pos(step_time), self.curve_vel(step_time)])
-    next_pt = np.concatenate([self.curve_pos((step_time) + 1*dt), self.curve_vel((step_time) + 1*dt)])
-    third_pt = np.concatenate([self.curve_pos((step_time) + 2*dt), self.curve_vel((step_time) + 2*dt)])
+    #cur_pt = np.concatenate([self.curve_pos(step_time), self.curve_vel(step_time)])
+    #next_pt = np.concatenate([self.curve_pos((step_time) + 1*dt), self.curve_vel((step_time) + 1*dt)])
+    #third_pt = np.concatenate([self.curve_pos((step_time) + 2*dt), self.curve_vel((step_time) + 2*dt)])
+    cur_pt = target[0]
+    next_pt = target[1]
+    third_pt = target[2]
 
     # Set up Quadratic Program to satisfy the Control Barrier Function
     kd = 2.0
@@ -75,10 +78,9 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
     g = np.reshape(g, [N, M])
     std = np.reshape(std, [N, 1])
     # std = np.zeros([N, 1])
-    u_rl = np.reshape(u_rl, [M, 1])#
     x = np.reshape(x, [N, 1])
     ''' q is the thrust direction'''
-    q = np.array([math.cos(x[6])*math.sin(x[7]), -math.sin(x[6]), math.cos(x[6])*math.cos(x[7])]).reshape(([-1,1]))
+    #q = np.array([math.cos(x[6])*math.sin(x[7]), -math.sin(x[6]), math.cos(x[6])*math.cos(x[7])]).reshape(([-1,1]))
 
     '''QP 1 : use CLF & CBF to solve thrust'''
     '''v1(x) = |x-x_g| ,v1(y) = |y-y_g|, v1(z) = |z-z_g|'''
@@ -121,14 +123,14 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
     #
     # [A_mat, b_vec, c] = self.safe_region
     # print(1 - x[:3, :].T.dot(A_mat).dot(x[:3, :]) - b_vec.T.dot(x[:3, :]) - c)
-
+    z_weight = 1
     G_pos = np.concatenate([np.concatenate([
         g[0, :].reshape([1, -1]),
         -g[0, :].reshape([1, -1]),
         g[1, :].reshape([1, -1]),
         -g[1, :].reshape([1, -1]),
-        g[2, :].reshape([1, -1]),
-        -g[2, :].reshape([1, -1]),
+        z_weight*g[2, :].reshape([1, -1]),
+        -z_weight*g[2, :].reshape([1, -1]),
         g[3, :].reshape([1, -1]),
         -g[3, :].reshape([1, -1]),
         g[4, :].reshape([1, -1]),
@@ -148,8 +150,8 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[0] + f[0] - next_pt[0]) - abs(kd*std[0]),
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[1] - f[1] + next_pt[1]) - abs(kd*std[1]),
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[1] + f[1] - next_pt[1]) - abs(kd*std[1]),
-        np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[2] - f[2] + next_pt[2]) - abs(kd*std[2]),
-        np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[2] + f[2] - next_pt[2]) - abs(kd*std[2]),
+        np.ones([1, 1]) * z_weight*((1 - gamma_pos_clf) * v_t_pos[2] - f[2] + next_pt[2]) - abs(kd*std[2]),
+        np.ones([1, 1]) * z_weight*((1 - gamma_pos_clf) * v_t_pos[2] + f[2] - next_pt[2]) - abs(kd*std[2]),
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[3] - f[3] + next_pt[3]) - abs(kd*std[3]),
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[3] + f[3] - next_pt[3]) - abs(kd*std[3]),
         np.ones([1, 1]) * ((1 - gamma_pos_clf) * v_t_pos[4] - f[4] + next_pt[4]) - abs(kd*std[4]),
@@ -168,7 +170,7 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
         solvers.options['show_progress'] = False
         
         sol = solvers.qp(P=self.P_pos, q=self.q_pos, G=G_pos, h=h_pos)
-        clf_sol = np.array(sol['x'][:4]).reshape([-1,1])
+        clf_sol = np.array(sol['x'][:3]).reshape([-1,1])
         pass
     ''' PID controller '''
     K_p = 13
@@ -189,8 +191,10 @@ def control_barrier(self, obs, u_rl, f, g, x, std, t,is_pid=False):
     #gp_prediction = GP.get_GP_prediction(self,predict_xyz[:6])
     gp_prediction = np.zeros(6)
     pos_angle, vel_angle = cal_angle(self, predict_xyz[:6].squeeze(), third_pt, gp_prediction)
-    weight = 0.8
+    weight = 0.6
     [phi_d, theta_d, psi_d] = weight*pos_angle + (1-weight)*vel_angle
-    u_bar = np.array([clf_sol[0],phi_d,theta_d]) 
+    
+    u_bar = np.array([clf_sol[0][0],phi_d,theta_d]).reshape([-1,1])
+    u_bar = np.squeeze(np.clip(u_bar,low_b,up_b))
 
     return u_bar,np.sum(v_t_pos[:3])
