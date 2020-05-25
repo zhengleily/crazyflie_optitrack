@@ -6,7 +6,8 @@ import os
 import sys
 sys.path.append("../lib")
 import time
-from threading import Thread, Timer
+from threading import Thread, Timer, Lock
+from multiprocessing import Process, Pipe
 
 import termios
 import contextlib
@@ -26,6 +27,9 @@ import math
 import CBF.CBF as cbf
 from CBF.GP import GP
 from CBF.learner import controller_init
+import copy
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 
 @contextlib.contextmanager
 def raw_mode(file):
@@ -59,7 +63,7 @@ class Crazy_Auto:
         self.is_flying = False
 
         # Control Parm
-        self.g = 10.  # gravitational acc. [m/s^ 2]
+        self.g = 9.81  # gravitational acc. [m/s^ 2]
         self.m = 0.04  # mass [kg]
         self.pi = 3.14
         self.num_state = 6
@@ -101,6 +105,9 @@ class Crazy_Auto:
         # Controller settings
         self.isEnabled = True
         self.rate = 50 # Hz
+
+        # ref_euler
+        self.cur_euler = [0,0,0]
 
     def predict_f_g(self, obs,phi=0,theta=0,psi=0):
         # Params
@@ -149,7 +156,7 @@ class Crazy_Auto:
         g_mat = dt * g_mat
         return f, g_mat, np.copy(obs) 
 
-    def _run_controller(self):
+    def _run_controller(self,gp_pipe,data_pipe):
         """ Main control loop """
         # Controller parameters
 
@@ -159,8 +166,8 @@ class Crazy_Auto:
         # slight elevation
         # time.sleep(2)
         #self.position_reference = [0., 0, 0.8]
-        self.curve = lambda t: [0,0.2*t,(0.6*t)/(0.6*t+1)] if t <= 15 else [0,3,9.0/10.0]
-        self.curve_vel = lambda t: [0,0.2,0.6/(0.6*t+1)**2] if t <= 15 else [0,0,0]
+        self.curve = lambda t: [0,0.4*t,(0.8*t)/(0.8*t+1)] if t <= 10 else [0,4,8.0/9.0]
+        self.curve_vel = lambda t: [0,0.4,0.8/(0.8*t+1)**2] if t <= 10 else [0,0,0]
         #self.curve = lambda t: [0,0,0.8] if t <= 15 else [0,0,0.8]
         #self.curve_vel = lambda t: [0,0,0] if t <= 15 else [0,0,0]
 
@@ -168,9 +175,12 @@ class Crazy_Auto:
         # Unlock the controller, BE CAREFLUE!!!
         self._cf.commander.send_setpoint(0, 0, 0, 0)
 
-        state_data = []
-        reference_data = []
-        control_data = []
+        self.reference_data = []
+        self.state_data = []
+        self.control_data = []
+        self.roll_data = []
+        self.pitch_data = []
+        self.yaw_data = []
         save_dir = 'data1' # will cover the old ones
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
@@ -214,28 +224,28 @@ class Crazy_Auto:
             #print("state: ", state)
             #print("euler: ", roll,pitch,yaw)
 
-            state_data.append(state)
-            reference_data.append(target[0])
+            self.state_data.append(state)
+            self.roll_data.append(roll)
+            self.pitch_data.append(pitch)
+            self.yaw_data.append(yaw)
+
+            self.reference_data.append(target[0])
 
             # Compute control signal - map errors to control signals
             if self.isEnabled:
-                # mpc
-                #if step_count <= 200:
-                #mpc_policy = mpc(state, target, horizon)
-                #roll_r, pitch_r, thrust_r = mpc_policy.solve()
-                #thrust_r += 0.4
-                if step_count >= 0:
-                    t_fg = time.time()
-                    if step_count <= 50000:
-                        f,g,x = self.predict_f_g(state,roll,pitch,yaw)
-                        std = np.zeros([6, 1])
-                    else:
-                        [f, gpr, g, x, std] = GP.get_GP_dynamics(self, s)
-                    t_cbf = time.time()
-                    u_bar_, v_t_pos = cbf.control_barrier(self, np.squeeze(state), f, g, x, std, target,None)
-                    [thrust_r, pitch_r, roll_r] = u_bar_
-                    #print("cbf time: ", time.time()-t_cbf)
-                    #thrust_r= u_bar_[0]
+                if step_count <= 100:
+                    f,g,x = self.predict_f_g(state,roll,pitch,yaw)
+                    std = np.zeros([6, 1])
+                else:
+                    [f, mean, g, x, std] = GP.get_GP_dynamics(self,state,roll,pitch,yaw)
+                    #print(mean)
+                    std = np.zeros([6, 1])
+                t_cbf = time.time()
+                u_bar_, v_t_pos = cbf.control_barrier(self, np.squeeze(state), f, g, x, std, target, roll, pitch, None)
+                [thrust_r, pitch_r, roll_r] = u_bar_
+                
+                #print("cbf time: ", time.time()-t_cbf)
+                #thrust_r= u_bar_[0]
                 
                 roll_r = self.saturate(roll_r / self.pi * 180, self.roll_limit)
                 pitch_r = self.saturate(pitch_r / self.pi * 180, self.pitch_limit)
@@ -281,21 +291,25 @@ class Crazy_Auto:
                 # If the controller is disabled, send a zero-thrust
                 roll_r, pitch_r, thrust_r = (0, 0, 0)
             yaw_r = 0
-            print("roll_r: ", roll_r/180*self.pi)
-            print("pitch_r: ", pitch_r/180*self.pi)
-            print("thrust_r: ", int(thrust_r))
+            #print("roll_r: ", roll_r/180*self.pi)
+            #print("pitch_r: ", pitch_r/180*self.pi)
+            #print("thrust_r: ", int(thrust_r))
             self._cf.commander.send_setpoint(roll_r, -pitch_r, yaw_r, int(thrust_r)) # change!!!
             # self._cf.commander.send_setpoint(roll_r, pitch_r, yaw_r, int(thrust_r))
 
-            control_data.append(np.array([roll_r, -pitch_r, yaw_r, int(thrust_r)]))
+            self.control_data.append(np.array([float(thrust_r)/self.thrust2input, roll_r, -pitch_r]))
             # test height control
             # self._cf.commander.send_setpoint(0, 0, 0, int(thrust_r)) # change!!!
-
+            t_c = time.time()
+            data_pipe.send([state,self.control_data[-1],roll,pitch,yaw,self.GP_model])
+            if gp_pipe.poll(0.0001):            
+                self.GP_model = gp_pipe.recv()
+                print('Receive GP model!')
             step_count += 1
-            if step_count > 800 and step_count%100==0:
-                np.save(save_dir + '/training_data/state' + str(step_count) + '.npy ', state_data)
-                np.save(save_dir + '/training_data/ref' + str(step_count) + '.npy', reference_data)
-                np.save(save_dir + '/training_data/ctrl' + str(step_count) + '.npy', control_data)
+            if step_count >= 800 and step_count%100==0:
+                np.save(save_dir + '/training_data/state' + str(step_count) + '.npy ', self.state_data)
+                np.save(save_dir + '/training_data/ref' + str(step_count) + '.npy', self.reference_data)
+                np.save(save_dir + '/training_data/ctrl' + str(step_count) + '.npy', self.control_data)
 
 
 
@@ -406,8 +420,15 @@ class Crazy_Auto:
         # Do not hijack the calling thread!
         Thread(target=self.update_vals).start()
         print("Waiting for logs to initalize...")
-        Thread(target=self._run_controller).start()
+        gp_pipe_a, gp_pipe_b = Pipe()
+        data_pipe_a, data_pipe_b = Pipe()
+
+        Process(target=update_gp,args=(gp_pipe_b, data_pipe_b)).start()
+        data_pipe_a.recv()
+
+        Thread(target=self._run_controller,args=(gp_pipe_a, data_pipe_a)).start()
         master = inputThread(self)
+
 
     def _connection_failed(self, link_uri, msg):
         """Callback when connection initial connection fails (i.e no Crazyflie
@@ -431,7 +452,7 @@ class Crazy_Auto:
 
 
 class inputThread(Thread):
-    """C reate an input thread which sending references taken in increments from
+    """Create an input thread which sending references taken in increments from
     the keys "valid_characters" attribute. With the incremental directions (+,-)
     a mapping is done such that
 
@@ -463,6 +484,125 @@ class inputThread(Thread):
             except (KeyboardInterrupt, EOFError):
                 sys.exit(0)
                 pass
+
+
+def update_gp(gp_pipe,data_pipe):
+    '''
+    j0 = 0
+    print("Update GP Thread")
+    time.sleep(0.4)
+    while True:
+        j = len(self.state_data)
+        print("gp timestep:",j)
+        if j-j0 <= 10:
+            time.sleep(0.5)
+            continue
+        print("update timestep:",j)
+        X = np.concatenate(self.state_data[j0:j]).reshape((-1, 6))
+        U = np.concatenate(self.control_data[j0:j]).reshape((-1, 3))
+        R = np.array(self.roll_data[j0:j]).reshape((-1, 1))
+        P = np.array(self.pitch_data[j0:j]).reshape((-1, 1))
+        Y = np.array(self.yaw_data[j0:j]).reshape((-1, 1))
+        GP_bak = copy.deepcopy(self.GP_model)
+
+        L = X.shape[0]
+        err = np.zeros((L - 1, 6))
+        for i in range(L - 1):
+            [f, g, x1] = self.predict_f_g(X[i, :],R[i,:],P[i,:],Y[i,:])
+            f = np.squeeze(f)
+            g = np.squeeze(g)
+            err[i, :] = X[i + 1, :] - f - np.squeeze(np.matmul(g, U[i, :].reshape([3,1])))
+
+        S = X[0:L - 1, :6]
+        t1 = time.time()
+        GP_bak[0].fit(S, err[:,:6])
+        self.GP_model = GP_bak
+        j0 = j
+    '''
+    j0 = 0
+    print("Update GP Process")
+    #time.sleep(0.4)
+    data_pipe.send(None)
+    X = []
+    U = []
+    R = []
+    P = []
+    Y = []    
+    while True:
+        data = data_pipe.recv()
+        X.append(data[0])
+        U.append(data[1])
+        R.append(data[2])
+        P.append(data[3])
+        Y.append(data[4])
+        j0 += 1
+        if j0 % 20 == 0:
+            GP_bak = copy.deepcopy(data[-1])
+            L = len(X)
+            err = np.zeros((L - 1, 6))
+            for i in range(L - 1):
+                [f, g, x1] = predict_f_g(X[i],R[i],P[i],Y[i])
+                f = np.squeeze(f)
+                g = np.squeeze(g)
+                err[i, :] = X[i + 1] - f - np.squeeze(np.matmul(g, U[i].reshape([3,1])))
+            X = np.concatenate(X).reshape([-1,6])
+            S = X[0:L - 1, :6]
+            t1 = time.time()
+            GP_bak[0].fit(S, err[:,:6])
+            print("step ",j0," update GP time: ",time.time()-t1)
+            X = []
+            U = []
+            R = []
+            P = []
+            Y = []  
+            gp_pipe.send(GP_bak)
+
+def predict_f_g(obs,phi=0,theta=0,psi=0):
+    # Params
+    dt = 1.0/50
+    m = 0.04
+    g = 9.81
+    dO = 6
+    obs = obs.reshape(-1, dO)
+
+    [pos_x, pos_y, pos_z, vel_x, vel_y, vel_z] = obs.T
+
+    sample_num = obs.shape[0]
+    # calculate f with size [-1,6,1]
+    f = np.concatenate([
+        np.array(vel_x).reshape(sample_num, 1),
+        np.array(vel_y).reshape(sample_num, 1),
+        np.array(vel_z - g * dt).reshape(sample_num, 1),
+        np.zeros([sample_num, 1]),
+        np.zeros([sample_num, 1]),
+        -g * np.ones([sample_num, 1]).reshape(-1, 1),
+    ], axis=1)
+    f = f * dt + obs
+    f = f.reshape([-1, dO, 1])
+    # calculate g with size [-1,6,3]
+    accel_x = np.concatenate([
+        (np.cos(psi) * np.sin(theta) * np.cos(phi) + np.sin(psi) * np.sin(phi)).reshape([-1, 1, 1]) / m,
+        np.zeros([sample_num, 1, 2])
+    ], axis=2)
+    accel_y = np.concatenate([
+        (np.sin(psi) * np.sin(theta) * np.cos(phi) - np.cos(psi) * np.sin(phi)).reshape([-1, 1, 1]) / m,
+        np.zeros([sample_num, 1, 2])
+    ], axis=2)
+    accel_z = np.concatenate([
+        (np.cos(theta) * np.cos(phi)).reshape([-1, 1, 1]) / m,
+        np.zeros([sample_num, 1, 2])
+    ], axis=2)
+    
+    g_mat = np.concatenate([
+        accel_x * dt, 
+        accel_y * dt,
+        accel_z * dt,
+        accel_x,
+        accel_y,
+        accel_z,
+    ], axis=1)
+    g_mat = dt * g_mat
+    return f, g_mat, np.copy(obs) 
 
 
 if __name__ == '__main__':

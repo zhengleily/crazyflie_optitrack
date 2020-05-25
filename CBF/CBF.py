@@ -41,7 +41,7 @@ def direction(self, state, state_dsr, gp_prediction):
     return pos_direction, vel_direction
 
 # Get compensatory action based on satisfaction of barrier function
-def control_barrier(self, obs, f, g, x, std, target,is_pid=False):
+def control_barrier(self, obs, f, g, x, std, target, roll, pitch, is_pid=False):
     #step_time = t
     dt = 1.0/self.rate
     ''' Recorded curve '''
@@ -192,8 +192,11 @@ def control_barrier(self, obs, f, g, x, std, target,is_pid=False):
     gp_prediction = np.zeros(6)
     pos_angle, vel_angle = cal_angle(self, predict_xyz[:6].squeeze(), third_pt, gp_prediction)
     weight = 0.6
-    [phi_d, theta_d, psi_d] = weight*pos_angle + (1-weight)*vel_angle
-    
+
+    self.cur_euler = weight*pos_angle + (1-weight)*vel_angle
+    [phi_d, theta_d, psi_d] = self.cur_euler
+    #phi_d = np.clip(phi_d,roll-0.2,roll+0.2)
+    #theta_d = np.clip(theta_d,pitch-0.2,pitch+0.2)
     u_bar = np.array([clf_sol[0][0],phi_d,theta_d]).reshape([-1,1])
     u_bar = np.squeeze(np.clip(u_bar,low_b,up_b))
 
